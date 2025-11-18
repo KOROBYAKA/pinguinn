@@ -1,12 +1,16 @@
+pub mod cli;
 use icmp;
+use ping;
 use std::time::{Duration, Instant};
 use std::{
     fs::File,
     io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr},
+    sync::Arc,
     thread, time,
 };
 use tokio;
+
 struct Node {
     ip_addr: String,
     port: u16,
@@ -14,7 +18,11 @@ struct Node {
 }
 
 impl Node {
-    fn get_ipv4(self) -> Ipv4Addr {
+    fn get_ipv4(&self) -> Ipv4Addr {
+        self.ip_addr.parse().unwrap()
+    }
+
+    fn get_ip(&self) -> IpAddr {
         self.ip_addr.parse().unwrap()
     }
 }
@@ -44,7 +52,7 @@ fn parse_file(file_name: &str) -> Vec<Node> {
     nodes
 }
 
-async fn icmp_ping(node: Node) {
+async fn icmp_ping(node: &Node) {
     let target_ip: Ipv4Addr = node.get_ipv4();
     let mut sock = icmp::IcmpSocket::connect(IpAddr::V4(target_ip)).unwrap();
     let start = Instant::now();
@@ -61,11 +69,28 @@ async fn icmp_ping(node: Node) {
     let dt = start.elapsed().as_millis();
     println!("Time:{:?}", dt);
 }
+
+async fn native_ping(node: &Node) {
+    match ping::new(node.get_ip())
+        .timeout(Duration::from_secs(2))
+        .ttl(128)
+        .socket_type(ping::RAW) //Keep a socket RAW to make it work normally
+        .send()
+    {
+        Ok(packet) => {
+            let millis: u128 = packet.rtt.as_millis();
+            println!("RTT {:?} IP: {:?}", millis, packet.target);
+        }
+        Err(e) => eprintln!("Ping failed: {}", e),
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    println!("Hello, world!");
-    let nodes = parse_file("short_gossip.log");
+    //let semaphore = Arc::new(tokio::sync::Semaphore::new(31));
+    //let output_file = cli::build_cli_parameters();
+    let nodes = parse_file("gossip.log");
     for node in nodes {
-        icmp_ping(node);
+        native_ping(&node).await;
     }
 }

@@ -1,10 +1,13 @@
 [package]
 name = "pinguinn"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.0", features = ["derive", "cargo"] }
+clap_derive = { version = "4.0.0-rc.1" }
 icmp = "0.3.0"
+ping = "0.7.0"
 quinn = "0.11"
 rustls = "0.23"
-tokio = { "1.48.0", features = ["full"] }
+tokio = { version = "1.48.0", features = ["full"] }
