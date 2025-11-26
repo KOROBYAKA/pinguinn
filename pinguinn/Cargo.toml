@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.0", features = ["derive", "cargo"] }
 clap_derive = { version = "4.0.0-rc.1" }
+csv = "1.4.0"
 icmp = "0.3.0"
 ping = "0.7.0"
 quinn = "0.11"
