@@ -17,6 +17,7 @@ struct Node {
     ip_addr: String,
     port: u16,
     delay: u128,
+    id: String,
 }
 
 impl Node {
@@ -67,6 +68,7 @@ fn parse_file(file_name: &str) -> Vec<Arc<Mutex<Node>>> {
                 Err(_) => args[2].parse::<u16>().unwrap(),
             },
             delay: 0,
+            id: args[1].into(),
         }));
         nodes.push(node);
     }
@@ -120,12 +122,14 @@ async fn main() {
 
     let file = File::create("ping.log").unwrap();
     let mut csv_writer = csv::Writer::from_writer(file);
-    csv_writer.write_record(&["IP", "RTT"]).unwrap();
+    csv_writer.write_record(&["ID", "IP", "RTT"]).unwrap();
     let nodes_len: usize = nodes.len();
     for node in nodes {
         let locked_node = node.lock().await;
         let ip_addr: String = locked_node.ip_addr.clone().into();
-        csv_writer.serialize((ip_addr, locked_node.delay)).unwrap();
+        csv_writer
+            .serialize((locked_node.id.clone(), ip_addr, locked_node.delay))
+            .unwrap();
     }
     let _ = csv_writer.flush();
     println!(
