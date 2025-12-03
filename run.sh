@@ -6,5 +6,5 @@ export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/b
 
 SOLANA_BIN="$(command -v solana)" || { echo "solana not found in PATH"; exit 127; }
 
-sudo "$SOLANA_BIN" gossip >> gossip.log
+sudo "$SOLANA_BIN" gossip > gossip.log
 sudo ./pinguinn_util

@@ -8,10 +8,12 @@ use std::{
     io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
-    thread, time,
+    time,
 };
-use tokio::sync::Mutex;
-
+use tokio::{
+    sync::{mpsc, Mutex},
+    task::{JoinHandle, JoinSet},
+};
 #[derive(Clone)]
 struct Node {
     ip_addr: String,
@@ -95,32 +97,54 @@ async fn icmp_ping(node: &Node) {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
+    let (tx, mut rx) = mpsc::channel::<Node>(100);
     //let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
-    //let mut handles = Vec::new();
     //let output_file = cli::build_cli_parameters();
-    //let mut handles = Vec::new();
-
     let nodes: Vec<Arc<Mutex<Node>>> = parse_file("gossip.log");
+    let mut bad_nodes: Vec<Node> = Vec::new();
+    let mut handles = JoinSet::new();
+    let stats_handle = tokio::spawn(async move {
+        let mut sum: u128 = 0;
+        let mut failed: u128 = 0;
+        let mut success: u128 = 0;
+        while let Some(node) = rx.recv().await {
+            if node.delay == 0 {
+                failed += 1;
+            } else {
+                success += 1;
+                sum += node.delay as u128;
+            }
+        }
+
+        (sum, failed, success)
+    });
+
     for node in &nodes {
         let node_m = node.clone();
-        let _ = tokio::spawn(async move {
+        let tx_clone = tx.clone();
+        handles.spawn(tokio::spawn(async move {
             let mut locked_node = node_m.lock().await;
             locked_node.native_ping().await;
-        });
-        //handles.push(handle);
+            let _ = tx_clone.send(locked_node.clone()).await;
+        }));
     }
 
-    /*for handle in handles {
-        let _ = handle.await;
-    }
-
+    while handles.join_next().await.is_some() {}
+    drop(tx);
+    let (sum, failed, success) = stats_handle.await.unwrap();
+    let avg = sum / success;
+    println!("Failed:{} Success:{} AVG:{}ms", failed, success, avg);
+    let cut_off: u128 = ((avg as f64) * 1.3).round() as u128;
+    println!("bad delay is {} with avg delay {}", cut_off, avg);
     for node in &nodes {
         let locked_node = node.lock().await;
-        println!("Node IP: {:?} RTT: {:?}", locked_node.ip_addr, locked_node.delay
-        );
-    }*/
+        if locked_node.delay > cut_off {
+            bad_nodes.push(locked_node.clone());
+        }
+    }
 
-    let file = File::create("ping.log").unwrap();
+    let file = File::create("ping.csv").unwrap();
+    let bad_nodes_file = File::create("bad_nodes.csv").unwrap();
     let mut csv_writer = csv::Writer::from_writer(file);
     csv_writer.write_record(&["ID", "IP", "RTT"]).unwrap();
     let nodes_len: usize = nodes.len();
@@ -132,8 +156,18 @@ async fn main() {
             .unwrap();
     }
     let _ = csv_writer.flush();
+    let mut csv_writer = csv::Writer::from_writer(bad_nodes_file);
+    let bad_nodes_len: usize = bad_nodes.len();
+    for node in bad_nodes {
+        let ip_addr: String = node.ip_addr.clone().into();
+        csv_writer
+            .serialize((node.id.clone(), ip_addr, node.delay))
+            .unwrap();
+    }
+    let _ = csv_writer.flush();
+
     println!(
-        "Ping-survey is done, total nodes were pinged:{:?}",
-        nodes_len
+        "Ping-survey is done, total nodes were pinged:{}\nBad nodes(30% RTT higher) are:{}",
+        nodes_len, bad_nodes_len
     );
 }
