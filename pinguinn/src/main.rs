@@ -1,7 +1,14 @@
 pub mod cli;
+pub mod error;
+pub mod quic_networking;
+pub mod tls_certificates;
 use csv::Writer;
 use icmp;
 use ping;
+use quic_networking::{create_client_config, create_client_endpoint, QuicClientCertificate};
+use quinn::Endpoint;
+use solana_sdk::signature::Keypair;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use std::{
     fs::File,
@@ -10,15 +17,18 @@ use std::{
     sync::Arc,
     time,
 };
+use tokio::time::timeout;
 use tokio::{
     sync::{mpsc, Mutex},
     task::{JoinHandle, JoinSet},
 };
+
 #[derive(Clone)]
 struct Node {
     ip_addr: String,
     port: u16,
     delay: u128,
+    quic_delay: u128,
     id: String,
 }
 
@@ -29,6 +39,18 @@ impl Node {
 
     fn get_ip(&self) -> IpAddr {
         self.ip_addr.parse().unwrap()
+    }
+
+    async fn quic_ping(&mut self, endpoint: Arc<Endpoint>) {
+        let remote: SocketAddr = format!("{}:{}", self.ip_addr, self.port).parse().unwrap();
+        let start = Instant::now();
+        let endpoint_connection = endpoint.connect(remote, "solana-tpu").unwrap();
+        println!("Ping IP{:?}:{:?}", self.ip_addr, self.port);
+        let result = timeout(Duration::from_millis(5000), endpoint_connection).await;
+        match result {
+            Ok(Ok(_)) => self.quic_delay = start.elapsed().as_millis() as u128,
+            _ => (),
+        }
     }
 
     async fn native_ping(&mut self) {
@@ -70,6 +92,7 @@ fn parse_file(file_name: &str) -> Vec<Arc<Mutex<Node>>> {
                 Err(_) => args[2].parse::<u16>().unwrap(),
             },
             delay: 0,
+            quic_delay: 0,
             id: args[1].into(),
         }));
         nodes.push(node);
@@ -97,22 +120,32 @@ async fn icmp_ping(node: &Node) {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+    //Creating a single QUIC endpoint for all nodes
+    let keypair = Keypair::new();
+    let client_cert: Arc<QuicClientCertificate> = Arc::new(QuicClientCertificate::new(&keypair));
+    let bind_addr = "0.0.0.0:0".parse().unwrap();
+    let client_config: quinn::ClientConfig = create_client_config(client_cert, false);
+    let quic_endpoint: Arc<Endpoint> =
+        Arc::new(create_client_endpoint(bind_addr, client_config).unwrap());
+
+    //
     let (tx, mut rx) = mpsc::channel::<Node>(100);
-    //let semaphore = Arc::new(tokio::sync::Semaphore::new(64));
-    //let output_file = cli::build_cli_parameters();
     let nodes: Vec<Arc<Mutex<Node>>> = parse_file("gossip.log");
     let mut bad_nodes: Vec<Node> = Vec::new();
     let mut handles = JoinSet::new();
     let stats_handle = tokio::spawn(async move {
         let mut sum: u128 = 0;
         let mut failed: u128 = 0;
-        let mut success: u128 = 0;
+        let mut success: u128 = 1;
         while let Some(node) = rx.recv().await {
-            if node.delay == 0 {
+            if node.quic_delay == 0 {
                 failed += 1;
             } else {
                 success += 1;
-                sum += node.delay as u128;
+                sum += node.quic_delay as u128;
             }
         }
 
@@ -122,13 +155,13 @@ async fn main() {
     for node in &nodes {
         let node_m = node.clone();
         let tx_clone = tx.clone();
+        let endpoint_clone = quic_endpoint.clone();
         handles.spawn(tokio::spawn(async move {
             let mut locked_node = node_m.lock().await;
-            locked_node.native_ping().await;
+            locked_node.quic_ping(endpoint_clone).await;
             let _ = tx_clone.send(locked_node.clone()).await;
         }));
     }
-
     while handles.join_next().await.is_some() {}
     drop(tx);
     let (sum, failed, success) = stats_handle.await.unwrap();
@@ -146,17 +179,24 @@ async fn main() {
     let file = File::create("ping.csv").unwrap();
     let bad_nodes_file = File::create("bad_nodes.csv").unwrap();
     let mut csv_writer = csv::Writer::from_writer(file);
-    csv_writer.write_record(&["ID", "IP", "RTT"]).unwrap();
+    csv_writer
+        .write_record(&["ID", "IP", "QUIC_HANDSHASKE", "ICMP_RTT"])
+        .unwrap();
     let nodes_len: usize = nodes.len();
     for node in nodes {
         let locked_node = node.lock().await;
         let ip_addr: String = locked_node.ip_addr.clone().into();
         csv_writer
-            .serialize((locked_node.id.clone(), ip_addr, locked_node.delay))
+            .serialize((
+                locked_node.id.clone(),
+                ip_addr,
+                locked_node.quic_delay,
+                locked_node.delay,
+            ))
             .unwrap();
     }
     let _ = csv_writer.flush();
-    let mut csv_writer = csv::Writer::from_writer(bad_nodes_file);
+    let mut csv_writer = Writer::from_writer(bad_nodes_file);
     let bad_nodes_len: usize = bad_nodes.len();
     for node in bad_nodes {
         let ip_addr: String = node.ip_addr.clone().into();

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.100"
 clap = { version = "4.5.0", features = ["derive", "cargo"] }
 clap_derive = { version = "4.0.0-rc.1" }
 csv = "1.4.0"
@@ -11,4 +12,12 @@ icmp = "0.3.0"
 ping = "0.7.0"
 quinn = "0.11"
 rustls = "0.23"
+rutls = "0.1.0"
+solana-keypair = "3.1.0"
+solana-sdk = "3.0.0"
+solana-streamer = "3.1.4"
+solana-tls-utils = "3.1.4"
+thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["full"] }
+webpki-roots = "1.0.4"
+x509-parser = "0.18.0"
